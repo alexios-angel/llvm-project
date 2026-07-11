@@ -27,6 +27,7 @@
 #include "clang/AST/TemplateName.h"
 #include "clang/AST/Type.h"
 #include "clang/AST/TypeOrdering.h"
+#include "clang/Basic/InputDependencyCollection.h"
 #include "clang/Basic/LLVM.h"
 #include "clang/Basic/PartialDiagnostic.h"
 #include "clang/Basic/SourceLocation.h"
@@ -128,6 +129,7 @@ class OMPTraitInfo;
 class ParentMapContext;
 struct ParsedTargetAttr;
 class Preprocessor;
+class PreprocessorOptions;
 class ProfileList;
 class StoredDeclsMap;
 class TargetAttr;
@@ -571,6 +573,10 @@ class ASTContext : public RefCountedBase<ASTContext> {
   // A mapping from Scalable Vector Type keys to their corresponding QualType.
   mutable llvm::DenseMap<llvm::ScalableVecTyKey, QualType> ScalableVecTyMap;
 
+  // Same preprocessor options from other lexers, so we can look up
+  // embedded files
+  PreprocessorOptions const *PPOpts = nullptr;
+
   ASTContext &this_() { return *this; }
 
 public:
@@ -812,6 +818,8 @@ public:
   mutable DeclarationNameTable DeclarationNames;
   IntrusiveRefCntPtr<ExternalASTSource> ExternalSource;
   ASTMutationListener *Listener = nullptr;
+  std::shared_ptr<InputDependencyCollection> InputDependencyPatterns =
+      std::make_shared<InputDependencyCollection>();
 
   /// Returns the clang bytecode interpreter context.
   interp::Context &getInterpContext() const;
@@ -1433,6 +1441,13 @@ public:
   ASTContext(const ASTContext &) = delete;
   ASTContext &operator=(const ASTContext &) = delete;
   ~ASTContext();
+
+  /// Set the preprocessor options to use right now
+  void setCurrentPreprocessorOptions(PreprocessorOptions const *NewPPOpts);
+  void setCurrentPreprocessorOptions(const PreprocessorOptions &NewPPOpts);
+
+  /// Get the preprocessor options we are using. Can be null!
+  PreprocessorOptions const *getCurrentPreprocessorOptions() const;
 
   /// Attach an external AST source to the AST context.
   ///

@@ -71,6 +71,7 @@ add_clang_library(clangBasic
   FileEntry.cpp
   FileManager.cpp
   IdentifierTable.cpp
+  InputDependencyCollection.cpp
   LangOptions.cpp
   LangStandards.cpp
   MakeSupport.cpp
@@ -83,6 +84,7 @@ add_clang_library(clangBasic
   ParsedAttrInfo.cpp
   ProfileList.cpp
   NoSanitizeList.cpp
+  ResourceSearch.cpp
   SanitizerSpecialCaseList.cpp
   Sanitizers.cpp
   Sarif.cpp
