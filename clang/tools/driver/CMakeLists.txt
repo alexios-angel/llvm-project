@@ -67,6 +67,10 @@ clang_target_link_libraries(clang
   clangSerialization
   )
 
+# cc1_main() calls llvm::HTTPClient::initialize() for __builtin_std_fetch;
+# LLVMHTTP is not an LLVM component, so link the target directly.
+target_link_libraries(clang PRIVATE LLVMHTTP)
+
 if(WIN32 AND NOT CYGWIN)
   # Prevent versioning if the buildhost is targeting for Win32.
 else()

@@ -142,6 +142,10 @@ add_clang_library(clangAST
   LINK_LIBS
   clangBasic
   clangLex
+  # __builtin_std_fetch performs an HTTP GET in the constant evaluator
+  # (ExprConstant.cpp) via llvm::HTTPClient. LLVMHTTP is not a component
+  # library, so it goes here rather than in LLVM_LINK_COMPONENTS.
+  LLVMHTTP
 
   DEPENDS
   ClangAttrDocTable

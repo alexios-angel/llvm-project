@@ -9242,6 +9242,7 @@ void ClangAs::ConstructJob(Compilation &C, const JobAction &JA,
 
   // Pass along any --embed-dir or similar options so we get proper embed paths.
   Args.AddAllArgs(CmdArgs, options::OPT_embed_dir_EQ);
+  Args.AddAllArgs(CmdArgs, options::OPT_fetch_allow_EQ);
 
   // Determine the original source input.
   auto FindSource = [](const Action *S) -> const Action * {

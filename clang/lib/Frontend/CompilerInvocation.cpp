@@ -4883,6 +4883,9 @@ static void GeneratePreprocessorArgs(const PreprocessorOptions &Opts,
   for (const auto &EmbedEntry : Opts.EmbedEntries)
     GenerateArg(Consumer, OPT_embed_dir_EQ, EmbedEntry);
 
+  for (const auto &FetchEntry : Opts.FetchAllowEntries)
+    GenerateArg(Consumer, OPT_fetch_allow_EQ, FetchEntry);
+
   // Don't handle LexEditorPlaceholders. It is implied by the action that is
   // generated elsewhere.
 }
@@ -4968,6 +4971,9 @@ static bool ParsePreprocessorArgs(PreprocessorOptions &Opts, ArgList &Args,
     StringRef Val = A->getValue();
     Opts.EmbedEntries.push_back(std::string(Val));
   }
+
+  for (const auto *A : Args.filtered(OPT_fetch_allow_EQ))
+    Opts.FetchAllowEntries.push_back(std::string(A->getValue()));
 
   // Always avoid lexing editor placeholders when we're just running the
   // preprocessor as we never want to emit the

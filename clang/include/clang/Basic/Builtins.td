@@ -1226,6 +1226,16 @@ def StdEmbed : Builtin {
   let Prototype = "void const*(unsigned int, int&, size_t&, ...)";
 }
 
+// std::fetch - std::embed's sibling: fetch a URL over HTTP(S) at
+// compile time and embed the response bytes. Same variadic/Consteval
+// shape as StdEmbed; the byte source is the network, gated by an
+// allow-list and an optional content-hash pin.
+def StdFetch : Builtin {
+  let Spellings = ["__builtin_std_fetch"];
+  let Attributes = [NoThrow, Const, Consteval];
+  let Prototype = "void const*(unsigned int, int&, size_t&, ...)";
+}
+
 // GCC exception builtins
 def EHReturn : Builtin {
   let Spellings = ["__builtin_eh_return"];

@@ -806,6 +806,10 @@ def L : JoinedOrSeparate<["-"], "L">, Flags<[RenderJoined]>, Group<Link_Group>,
 def embed_dir_EQ : Joined<["--"], "embed-dir=">, Group<Preprocessor_Group>,
     Visibility<[ClangOption, CC1Option]>, MetaVarName<"<dir>">,
     HelpText<"Add directory to embed search path">;
+def fetch_allow_EQ : Joined<["--"], "fetch-allow=">, Group<Preprocessor_Group>,
+    Visibility<[ClangOption, CC1Option]>, MetaVarName<"<url-glob>">,
+    HelpText<"Authorize __builtin_std_fetch to fetch URLs matching this glob "
+             "(* matches within a path segment, ** matches across '/')">;
 def MD : Flag<["-"], "MD">, Group<M_Group>,
     HelpText<"Write a depfile containing user and system headers">;
 def MMD : Flag<["-"], "MMD">, Group<M_Group>,

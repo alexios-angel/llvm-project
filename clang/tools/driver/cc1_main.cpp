@@ -30,6 +30,7 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Config/llvm-config.h"
+#include "llvm/HTTP/HTTPClient.h"
 #include "llvm/LinkAllPasses.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/TargetRegistry.h"
@@ -231,6 +232,11 @@ int cc1_main(ArrayRef<const char *> Argv, const char *Argv0, void *MainAddr) {
   llvm::InitializeAllTargetMCs();
   llvm::InitializeAllAsmPrinters();
   llvm::InitializeAllAsmParsers();
+
+  // __builtin_std_fetch performs HTTP GETs in the constant evaluator. curl's
+  // global init is not thread-safe, so it must run once here, before any
+  // worker threads spawn. No-op / stub when built without network support.
+  llvm::HTTPClient::initialize();
 
   // Buffer diagnostics from argument parsing so that we can output them using a
   // well formed diagnostic object.

@@ -4110,6 +4110,11 @@ Sema::CheckBuiltinFunctionCall(FunctionDecl *FDecl, unsigned BuiltinID,
     if (BuiltinStdEmbed(TheCall))
       return ExprError();
     break;
+  case Builtin::BI__builtin_std_fetch:
+    // same variadic shape as __builtin_std_embed; inspect the args
+    if (BuiltinStdFetch(TheCall))
+      return ExprError();
+    break;
   }
 
   if (getLangOpts().HLSL && HLSL().CheckBuiltinFunctionCall(BuiltinID, TheCall))
@@ -7171,6 +7176,134 @@ bool Sema::BuiltinStdEmbed(CallExpr *TheCall) {
   // proper typesetting.
   TheCall->setType(PtrRefTy);
 
+  return false;
+}
+
+// __builtin_std_fetch(locus, status&, size&, ptr&, url_size, url_ptr,
+//                     [hash_size, hash_ptr])
+// Mirrors BuiltinStdEmbed's argument inspection: the URL replaces the
+// resource name, and the optional trailing pair is an expected content
+// hash (hex string) for reproducibility pinning - not a file offset/limit.
+bool Sema::BuiltinStdFetch(CallExpr *TheCall) {
+  const bool HasProperArgCount = !checkArgCountAtLeast(TheCall, 6);
+  const bool HasHashArgs =
+      !checkArgCountAtMost(TheCall, 8) && TheCall->getNumArgs() == 8;
+  if (!HasProperArgCount)
+    return true;
+  // 7 args is ambiguous: the hash needs both size and pointer.
+  if (TheCall->getNumArgs() == 7) {
+    Diag(TheCall->getBeginLoc(), diag::err_invalid_builtin_std_fetch_argument)
+        << TheCall->getArg(6) << "either absent or a (size, pointer) pair"
+        << TheCall->getArg(6)->getSourceRange();
+    return true;
+  }
+
+  const Expr *Locus = TheCall->getArg(0);
+  const Expr *StatusRef = TheCall->getArg(1);
+  const Expr *SizeRef = TheCall->getArg(2);
+  const Expr *PtrRef = TheCall->getArg(3);
+  const Expr *UrlSize = TheCall->getArg(4);
+  const Expr *UrlPtr = TheCall->getArg(5);
+  const Expr *HashSize = HasHashArgs ? TheCall->getArg(6) : nullptr;
+  const Expr *HashPtr = HasHashArgs ? TheCall->getArg(7) : nullptr;
+  const uint64_t CharSize = Context.getCharWidth();
+
+  QualType LocusTy = Locus->getType();
+  if (!LocusTy->isIntegralOrUnscopedEnumerationType()) {
+    Diag(TheCall->getBeginLoc(), diag::err_invalid_builtin_std_fetch_argument)
+        << Locus << "an integral type with a non-negative value"
+        << Locus->getSourceRange();
+    return true;
+  }
+
+  QualType StatusRefTy = StatusRef->getType();
+  if ((!StatusRefTy->isIntegralOrUnscopedEnumerationType()) ||
+      StatusRefTy.isConstant(Context) || !StatusRef->isLValue()) {
+    Diag(TheCall->getBeginLoc(), diag::err_invalid_builtin_std_fetch_argument)
+        << StatusRef << "'int&'" << StatusRef->getSourceRange();
+    return true;
+  }
+
+  QualType SizeRefTy = SizeRef->getType();
+  if ((!SizeRefTy->isIntegralOrUnscopedEnumerationType()) ||
+      SizeRefTy.isConstant(Context) || !SizeRef->isLValue()) {
+    Diag(TheCall->getBeginLoc(), diag::err_invalid_builtin_std_fetch_argument)
+        << SizeRef << "'size_t&'" << SizeRef->getSourceRange();
+    return true;
+  }
+
+  // value pointer (pointer to const char-like); its type is the result type
+  QualType PtrRefTy = PtrRef->getType();
+  if (!PtrRefTy->isPointerType() || PtrRefTy.isConstant(Context)) {
+    Diag(TheCall->getBeginLoc(), diag::err_invalid_builtin_std_fetch_argument)
+        << PtrRefTy
+        << "a pointer to const 'char', 'unsigned char', or 'std::byte'"
+        << PtrRef->getSourceRange();
+    return true;
+  }
+  QualType ArrElementTy = PtrRefTy->getPointeeType();
+  if (!ArrElementTy.isConstant(Context) ||
+      !(Context.getTypeSize(ArrElementTy) == CharSize &&
+        Context.getTypeAlign(ArrElementTy) == CharSize &&
+        ArrElementTy->isIntegralOrEnumerationType())) {
+    Diag(TheCall->getBeginLoc(), diag::err_invalid_builtin_std_fetch_argument)
+        << PtrRefTy
+        << "a pointer to const 'char', 'unsigned char', or 'std::byte'"
+        << PtrRef->getSourceRange();
+    return true;
+  }
+
+  QualType UrlSizeTy = UrlSize->getType();
+  if (!UrlSizeTy->isIntegralOrEnumerationType()) {
+    Diag(TheCall->getBeginLoc(), diag::err_invalid_builtin_std_fetch_argument)
+        << UrlSizeTy << "an integral type with a non-negative value"
+        << UrlSize->getSourceRange();
+    return true;
+  }
+
+  QualType UrlPtrTy = UrlPtr->getType();
+  if (!UrlPtrTy->isPointerType()) {
+    Diag(UrlPtr->getBeginLoc(), diag::err_invalid_builtin_std_fetch_argument)
+        << UrlPtrTy
+        << "a pointer to (possibly qualified) 'char', 'wchar_t', or 'char8_t'"
+        << UrlPtr->getSourceRange();
+    return true;
+  }
+  QualType UrlCharTy(UrlPtrTy->getPointeeOrArrayElementType(), 0);
+  if (!UrlCharTy->isCharType() && !UrlCharTy->isChar8Type() &&
+      !UrlCharTy->isWideCharType()) {
+    Diag(UrlPtr->getBeginLoc(), diag::err_invalid_builtin_std_fetch_argument)
+        << UrlPtrTy
+        << "a pointer to (possibly qualified) 'char', 'wchar_t', or 'char8_t'"
+        << UrlPtr->getSourceRange();
+    return true;
+  }
+
+  if (HasHashArgs) {
+    QualType HashSizeTy = HashSize->getType();
+    if (!HashSizeTy->isIntegralOrEnumerationType()) {
+      Diag(TheCall->getBeginLoc(), diag::err_invalid_builtin_std_fetch_argument)
+          << HashSizeTy << "an integral type with a non-negative value"
+          << HashSize->getSourceRange();
+      return true;
+    }
+    QualType HashPtrTy = HashPtr->getType();
+    if (!HashPtrTy->isPointerType()) {
+      Diag(HashPtr->getBeginLoc(), diag::err_invalid_builtin_std_fetch_argument)
+          << HashPtrTy << "a pointer to (possibly qualified) 'char'"
+          << HashPtr->getSourceRange();
+      return true;
+    }
+    QualType HashCharTy(HashPtrTy->getPointeeOrArrayElementType(), 0);
+    if (!HashCharTy->isCharType() && !HashCharTy->isChar8Type()) {
+      Diag(HashPtr->getBeginLoc(), diag::err_invalid_builtin_std_fetch_argument)
+          << HashPtrTy << "a pointer to (possibly qualified) 'char'"
+          << HashPtr->getSourceRange();
+      return true;
+    }
+  }
+
+  TheCall->setType(PtrRefTy);
   return false;
 }
 

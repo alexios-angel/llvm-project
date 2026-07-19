@@ -862,6 +862,10 @@ def err_invalid_builtin_argument : Error<"invalid argument '%0' to %1">;
 def err_invalid_builtin_std_embed_argument : Error<
   "invalid argument to '__builtin_std_embed': %0 should be %1">;
 
+/// __builtin_std_fetch type checking errors
+def err_invalid_builtin_std_fetch_argument : Error<
+  "invalid argument to '__builtin_std_fetch': %0 should be %1">;
+
 
 def err_arm_invalid_specialreg : Error<"invalid special register for builtin">;
 def err_arm_invalid_coproc : Error<"coprocessor %0 must be configured as "

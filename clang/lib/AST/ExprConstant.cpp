@@ -54,6 +54,7 @@
 #include "clang/Basic/Builtins.h"
 #include "clang/Basic/DiagnosticSema.h"
 #include "clang/Basic/FileManager.h"
+#include "clang/Basic/FetchAllowList.h"
 #include "clang/Basic/ResourceSearch.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/TargetBuiltins.h"
@@ -63,10 +64,13 @@
 #include "llvm/ADT/Sequence.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/Config/llvm-config.h"
+#include "llvm/HTTP/HTTPClient.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ConvertUTF.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/SaveAndRestore.h"
+#include "llvm/Support/SHA256.h"
 #include "llvm/Support/SipHash.h"
 #include "llvm/Support/TimeProfiler.h"
 #include "llvm/Support/raw_ostream.h"
@@ -11183,6 +11187,213 @@ bool PointerExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
     // inform the result we have put a string literal in there
     Result.addArray(Info, E, BackingArrayConstantArrayTy);
     return WriteOutStatus(FileFound);
+  }
+  case Builtin::BI__builtin_std_fetch: {
+    // __builtin_std_fetch is __builtin_std_embed's sibling: it fetches a
+    // URL over HTTP(S) DURING CONSTANT EVALUATION and embeds the response
+    // bytes. It reuses embed's string-reconstruction and byte-array
+    // materialization; the middle (file lookup + read) is replaced by an
+    // allow-list check, an HTTPClient GET, and an optional content-hash
+    // pin. There is no caching: every build performs the fetch.
+    constexpr uint64_t Ok = 1;
+    constexpr uint64_t NotAuthorized = 2;
+    constexpr uint64_t FetchFailed = 3;
+    constexpr uint64_t Empty = 4;
+    constexpr uint64_t HashMismatch = 5;
+
+    const Expr *LocusArg = E->getArg(0);
+    const Expr *StatusOutArg = E->getArg(1);
+    const Expr *SizeOutArg = E->getArg(2);
+    const Expr *PtrOutArg = E->getArg(3);
+    const Expr *UrlSizeArg = E->getArg(4);
+    const Expr *UrlPtrArg = E->getArg(5);
+    const bool HasHash = E->getNumArgs() == 8;
+    const Expr *HashSizeArg = HasHash ? E->getArg(6) : nullptr;
+    const Expr *HashPtrArg = HasHash ? E->getArg(7) : nullptr;
+    (void)LocusArg; // a URL is absolute; no quoted-search anchor to honor
+
+    QualType PtrOutTy = PtrOutArg->getType();
+    QualType ArrElementTy = PtrOutTy->getPointeeType();
+
+    const size_t SizeTySize = Info.Ctx.getTypeSize(Info.Ctx.getSizeType());
+    const size_t IntTySize = Info.Ctx.getTypeSize(Info.Ctx.IntTy);
+    const size_t WCharTySize = Info.Ctx.getTypeSize(Info.Ctx.getWideCharType());
+
+    // Reconstruct a compile-time string pointer argument into `Out`,
+    // transcoding wide chars to UTF-8 exactly as __builtin_std_embed does.
+    auto ReadString = [&](const Expr *SizeArg, const Expr *PtrArg,
+                          std::string &Out) -> bool {
+      LValue PtrLVal;
+      if (!EvaluatePointer(PtrArg, PtrLVal, Info))
+        return Error(PtrArg);
+      APSInt SizeVal;
+      if (!EvaluateInteger(SizeArg, SizeVal, Info))
+        return Error(SizeArg);
+      if (SizeVal.getBitWidth() > 64) {
+        Info.FFDiag(SizeArg->getBeginLoc(), diag::err_ice_too_large)
+            << SizeArg << 64 << 1;
+        return false;
+      }
+      uint64_t Size = SizeVal.getZExtValue();
+      const QualType CharTy(PtrArg->getType()->getPointeeOrArrayElementType(),
+                            0);
+      if (CharTy->isChar8Type() || CharTy->isCharType() ||
+          (CharTy->isWideCharType() && WCharTySize == 8)) {
+        for (uint64_t I = 0; I < Size; ++I) {
+          APValue Char;
+          if (!handleLValueToRValueConversion(Info, PtrArg, CharTy, PtrLVal,
+                                              Char))
+            return Error(PtrArg);
+          Out.push_back(static_cast<char>(
+              static_cast<unsigned char>(Char.getInt().getExtValue())));
+          if (!HandleLValueArrayAdjustment(Info, PtrArg, PtrLVal, CharTy, 1))
+            return Error(PtrArg);
+        }
+      } else if (CharTy->isWideCharType() && WCharTySize == 16) {
+        llvm::SmallVector<llvm::UTF16, 64> U16;
+        for (uint64_t I = 0; I < Size; ++I) {
+          APValue Char;
+          if (!handleLValueToRValueConversion(Info, PtrArg, CharTy, PtrLVal,
+                                              Char))
+            return Error(PtrArg);
+          U16.push_back(static_cast<llvm::UTF16>(Char.getInt().getExtValue()));
+          if (!HandleLValueArrayAdjustment(Info, PtrArg, PtrLVal, CharTy, 1))
+            return Error(PtrArg);
+        }
+        if (!llvm::convertUTF16ToUTF8String(U16, Out))
+          return Error(PtrArg);
+      } else if (CharTy->isWideCharType() && WCharTySize == 32) {
+        llvm::SmallVector<llvm::UTF32, 64> U32;
+        for (uint64_t I = 0; I < Size; ++I) {
+          APValue Char;
+          if (!handleLValueToRValueConversion(Info, PtrArg, CharTy, PtrLVal,
+                                              Char))
+            return Error(PtrArg);
+          U32.push_back(static_cast<llvm::UTF32>(Char.getInt().getExtValue()));
+          if (!HandleLValueArrayAdjustment(Info, PtrArg, PtrLVal, CharTy, 1))
+            return Error(PtrArg);
+        }
+        if (!llvm::convertUTF32ToUTF8String(U32, Out))
+          return Error(PtrArg);
+      } else {
+        return Error(PtrArg);
+      }
+      return true;
+    };
+
+    std::string Url;
+    if (!ReadString(UrlSizeArg, UrlPtrArg, Url))
+      return false;
+    std::string ExpectedHash;
+    if (HasHash && !ReadString(HashSizeArg, HashPtrArg, ExpectedHash))
+      return false;
+
+    auto WriteOutStatus = [&](uint64_t Status) -> bool {
+      LValue StatusOutLVal;
+      if (!EvaluateLValue(StatusOutArg, StatusOutLVal, Info))
+        return Error(StatusOutArg);
+      APSInt StatusVal(llvm::APInt(IntTySize, Status, true), false);
+      APValue StatusOutResult(StatusVal);
+      return handleAssignment(Info, StatusOutArg, StatusOutLVal,
+                              StatusOutArg->getType(), StatusOutResult) ||
+             Error(StatusOutArg);
+    };
+    auto WriteOutSize = [&](uint64_t Size) -> bool {
+      LValue SizeOutLVal;
+      if (!EvaluateLValue(SizeOutArg, SizeOutLVal, Info))
+        return Error(SizeOutArg);
+      APSInt SizeVal(llvm::APInt(SizeTySize, Size, false), true);
+      APValue SizeOutResult(SizeVal);
+      return handleAssignment(Info, SizeOutArg, SizeOutLVal,
+                              SizeOutArg->getType(), SizeOutResult) ||
+             Error(SizeOutArg);
+    };
+
+    // Authorization gate: the URL must match a --fetch-allow glob.
+    PreprocessorOptions const *PPOpts =
+        Info.Ctx.getCurrentPreprocessorOptions();
+    FetchAllowList Allow;
+    if (PPOpts)
+      for (const std::string &Glob : PPOpts->FetchAllowEntries)
+        Allow.add(Glob);
+    if (!Allow.isAllowed(Url)) {
+      Result.setNull(Info.Ctx, PtrOutTy);
+      return WriteOutStatus(NotAuthorized);
+    }
+
+    // Perform the GET. isAvailable() is false when this clang was built
+    // without curl (non-Windows); degrade with a clear diagnostic rather
+    // than crashing in the stub's llvm_unreachable.
+    if (!llvm::HTTPClient::isAvailable()) {
+      Info.FFDiag(UrlPtrArg->getBeginLoc(), diag::err_cannot_fetch_url)
+          << Url << "this clang was built without network (curl) support";
+      return false;
+    }
+    if (!llvm::HTTPClient::IsInitialized) {
+      Info.FFDiag(UrlPtrArg->getBeginLoc(), diag::err_cannot_fetch_url)
+          << Url << "the HTTP client was not initialized in this compilation";
+      return false;
+    }
+
+    std::string Body;
+    struct BufferHandler : llvm::HTTPResponseHandler {
+      std::string &Out;
+      explicit BufferHandler(std::string &O) : Out(O) {}
+      llvm::Error handleBodyChunk(llvm::StringRef Chunk) override {
+        Out.append(Chunk.begin(), Chunk.end());
+        return llvm::Error::success();
+      }
+    } Handler(Body);
+
+    llvm::HTTPClient Client;
+    llvm::HTTPRequest Request(Url);
+    if (llvm::Error Err = Client.perform(Request, Handler)) {
+      Info.FFDiag(UrlPtrArg->getBeginLoc(), diag::err_cannot_fetch_url)
+          << Url << llvm::toString(std::move(Err));
+      return false;
+    }
+    unsigned Code = Client.responseCode();
+    if (Code && Code != 200) {
+      Result.setNull(Info.Ctx, PtrOutTy);
+      return WriteOutStatus(FetchFailed);
+    }
+
+    // Optional content-hash pin (lowercase hex SHA-256) for reproducibility.
+    if (HasHash && !ExpectedHash.empty()) {
+      llvm::SHA256 Hasher;
+      Hasher.update(llvm::StringRef(Body));
+      std::string Got = llvm::toHex(Hasher.final(), /*LowerCase=*/true);
+      if (!llvm::StringRef(Got).equals_insensitive(ExpectedHash)) {
+        Result.setNull(Info.Ctx, PtrOutTy);
+        return WriteOutStatus(HashMismatch);
+      }
+    }
+
+    if (Body.empty()) {
+      Result.setNull(Info.Ctx, PtrOutTy);
+      return WriteOutSize(0) && WriteOutStatus(Empty);
+    }
+
+    const uint64_t DataSize = Body.size();
+    if (!WriteOutSize(DataSize))
+      return false;
+
+    // Materialize the fetched bytes as a binary StringLiteral (Create
+    // copies into the ASTContext, so the local Body may die afterward).
+    SourceLocation BuiltinLoc = E->getBeginLoc();
+    APSInt SizeAP(llvm::APInt(SizeTySize, DataSize, false), true);
+    StringRef TargetData(Body.data(), DataSize);
+    QualType BackingArrayTy = Info.Ctx.getConstantArrayType(
+        ArrElementTy, SizeAP, nullptr, ArraySizeModifier::Normal, 0);
+    const ConstantArrayType *BackingArrayConstantArrayTy =
+        cast<ConstantArrayType>(BackingArrayTy);
+    StringLiteral *DataLiteral = StringLiteral::Create(
+        Info.Ctx, TargetData, StringLiteralKind::Binary, false, BackingArrayTy,
+        ArrayRef<SourceLocation>(&BuiltinLoc, 1));
+    if (!EvaluateLValue(DataLiteral, Result, Info))
+      return Error(E);
+    Result.addArray(Info, E, BackingArrayConstantArrayTy);
+    return WriteOutStatus(Ok);
   }
   default:
     return false;

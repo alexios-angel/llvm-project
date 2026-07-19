@@ -71,6 +71,7 @@ add_clang_library(clangBasic
   FileEntry.cpp
   FileManager.cpp
   IdentifierTable.cpp
+  FetchAllowList.cpp
   InputDependencyCollection.cpp
   LangOptions.cpp
   LangStandards.cpp

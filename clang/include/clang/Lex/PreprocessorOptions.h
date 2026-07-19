@@ -192,6 +192,9 @@ public:
   /// User specified embed entries.
   std::vector<std::string> EmbedEntries;
 
+  /// URL globs authorizing __builtin_std_fetch (--fetch-allow=).
+  std::vector<std::string> FetchAllowEntries;
+
   /// Whether the compiler instance should retain (i.e., not free)
   /// the buffers associated with remapped files.
   ///

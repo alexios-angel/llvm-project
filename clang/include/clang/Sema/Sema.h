@@ -3060,6 +3060,7 @@ private:
                                        BuiltinCountedByRefKind K);
   bool BuiltinCountedByRef(CallExpr *TheCall);
   bool BuiltinStdEmbed(CallExpr *TheCall);
+  bool BuiltinStdFetch(CallExpr *TheCall);
 
   // Matrix builtin handling.
   ExprResult BuiltinMatrixTranspose(CallExpr *TheCall, ExprResult CallResult);
