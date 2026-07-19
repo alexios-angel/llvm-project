@@ -11051,15 +11051,26 @@ bool PointerExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
         }
       } else {
         const unsigned int CallStackIndexDistance = CallStackDistance - 1;
+        // Clamp to the bottom frame: a distance that reaches (or passes)
+        // the top of the evaluation stack must not produce index 0 - the
+        // frame walk in getCallFrameAndDepth would run past BottomFrame
+        // into a null Caller. A constexpr-variable initializer calling a
+        // single-frame wrapper legitimately hits this.
         const unsigned int TargetFrameIndex =
-            CallStackIndexDistance > Info.CurrentCall->Index
+            CallStackIndexDistance >= Info.CurrentCall->Index
                 ? 1
                 : Info.CurrentCall->Index - CallStackIndexDistance;
         auto TargetFrameAndDepth = Info.getCallFrameAndDepth(TargetFrameIndex);
-        FileID ThisFileID =
-            SM.getFileID(TargetFrameAndDepth.first->CallRange.getBegin());
-        if (ThisFileID.isValid()) {
-          ThisFile = SM.getFileEntryRefForID(ThisFileID);
+        // Call indexes need not be contiguous within this stack (sibling
+        // calls consumed indexes), so the lookup can miss: degrade to "no
+        // quoted-search anchor" (embed-dirs are still searched) - never
+        // dereference a null frame.
+        if (TargetFrameAndDepth.first != nullptr) {
+          FileID ThisFileID =
+              SM.getFileID(TargetFrameAndDepth.first->CallRange.getBegin());
+          if (ThisFileID.isValid()) {
+            ThisFile = SM.getFileEntryRefForID(ThisFileID);
+          }
         }
       }
     }
